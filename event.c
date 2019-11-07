@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <net/if.h>
 #include <errno.h>
+#include <inttypes.h>
 #include "iw.h"
 
 static int no_seq_check(struct nl_msg *msg, void *arg)
@@ -45,12 +46,14 @@ static void print_frame(struct print_event_args *args, struct nlattr *attr)
 {
 	uint8_t *frame;
 	size_t len;
-	int i;
+	unsigned int i;
 	char macbuf[6*3];
 	uint16_t tmp;
 
-	if (!attr)
+	if (!attr) {
 		printf(" [no frame]");
+		return;
+	}
 
 	frame = nla_data(attr);
 	len = nla_len(attr);
@@ -242,9 +245,8 @@ static void parse_wowlan_wake_event(struct nlattr **attrs)
 		nla_for_each_nested(match,
 				    tb[NL80211_WOWLAN_TRIG_NET_DETECT_RESULTS],
 				    rem_nst) {
-			nla_parse(tb_match, NUM_NL80211_ATTR, nla_data(match),
-				  nla_len(match),
-				  NULL);
+			nla_parse_nested(tb_match, NL80211_ATTR_MAX, match,
+					 NULL);
 			printf("\t\tSSID: \"");
 			print_ssid_escaped(nla_len(tb_match[NL80211_ATTR_SSID]),
 					   nla_data(tb_match[NL80211_ATTR_SSID]));
@@ -289,6 +291,363 @@ static void parse_wowlan_wake_event(struct nlattr **attrs)
 		printf("\t* TCP connection lost\n");
 	if (tb[NL80211_WOWLAN_TRIG_WAKEUP_TCP_NOMORETOKENS])
 		printf("\t* TCP connection ran out of tokens\n");
+}
+
+static void parse_nan_term(struct nlattr **attrs)
+{
+	struct nlattr *func[NL80211_NAN_FUNC_ATTR_MAX + 1];
+
+	static struct nla_policy
+		nan_func_policy[NL80211_NAN_FUNC_ATTR_MAX + 1] = {
+		[NL80211_NAN_FUNC_TYPE] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_SERVICE_ID] = { },
+		[NL80211_NAN_FUNC_PUBLISH_TYPE] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_PUBLISH_BCAST] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_SUBSCRIBE_ACTIVE] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_FOLLOW_UP_ID] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_FOLLOW_UP_REQ_ID] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_FOLLOW_UP_DEST] = { },
+		[NL80211_NAN_FUNC_CLOSE_RANGE] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_TTL] = { .type = NLA_U32 },
+		[NL80211_NAN_FUNC_SERVICE_INFO] = { },
+		[NL80211_NAN_FUNC_SRF] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_RX_MATCH_FILTER] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_TX_MATCH_FILTER] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_INSTANCE_ID] = { .type = NLA_U8},
+	};
+
+	if (!attrs[NL80211_ATTR_COOKIE]) {
+		printf("Bad NAN func termination format - cookie is missing\n");
+		return;
+	}
+
+	if (nla_parse_nested(func, NL80211_NAN_FUNC_ATTR_MAX,
+			     attrs[NL80211_ATTR_NAN_FUNC],
+			     nan_func_policy)) {
+		printf("NAN: failed to parse nan func\n");
+		return;
+	}
+
+	if (!func[NL80211_NAN_FUNC_INSTANCE_ID]) {
+		printf("Bad NAN func termination format-instance id missing\n");
+		return;
+	}
+
+	if (!func[NL80211_NAN_FUNC_TERM_REASON]) {
+		printf("Bad NAN func termination format - reason is missing\n");
+		return;
+	}
+	printf("NAN(cookie=0x%llx): Termination event: id = %d, reason = ",
+	       (long long int)nla_get_u64(attrs[NL80211_ATTR_COOKIE]),
+	       nla_get_u8(func[NL80211_NAN_FUNC_INSTANCE_ID]));
+	switch (nla_get_u8(func[NL80211_NAN_FUNC_TERM_REASON])) {
+	case NL80211_NAN_FUNC_TERM_REASON_USER_REQUEST:
+		printf("user request\n");
+		break;
+	case NL80211_NAN_FUNC_TERM_REASON_TTL_EXPIRED:
+		printf("expired\n");
+		break;
+	case NL80211_NAN_FUNC_TERM_REASON_ERROR:
+		printf("error\n");
+		break;
+	default:
+		printf("unknown\n");
+	}
+}
+
+static const char *ftm_fail_reason(unsigned int reason)
+{
+#define FTM_FAIL_REASON(x) case NL80211_PMSR_FTM_FAILURE_##x: return #x
+	switch (reason) {
+	FTM_FAIL_REASON(UNSPECIFIED);
+	FTM_FAIL_REASON(NO_RESPONSE);
+	FTM_FAIL_REASON(REJECTED);
+	FTM_FAIL_REASON(WRONG_CHANNEL);
+	FTM_FAIL_REASON(PEER_NOT_CAPABLE);
+	FTM_FAIL_REASON(INVALID_TIMESTAMP);
+	FTM_FAIL_REASON(PEER_BUSY);
+	FTM_FAIL_REASON(BAD_CHANGED_PARAMS);
+	default:
+		return "unknown";
+	}
+}
+
+static void parse_pmsr_ftm_data(struct nlattr *data)
+{
+	struct nlattr *ftm[NL80211_PMSR_FTM_RESP_ATTR_MAX + 1];
+
+	printf("    FTM");
+	nla_parse_nested(ftm, NL80211_PMSR_FTM_RESP_ATTR_MAX, data, NULL);
+
+	if (ftm[NL80211_PMSR_FTM_RESP_ATTR_FAIL_REASON]) {
+		printf(" failed: %s (%d)",
+		       ftm_fail_reason(nla_get_u32(ftm[NL80211_PMSR_FTM_RESP_ATTR_FAIL_REASON])),
+		       nla_get_u32(ftm[NL80211_PMSR_FTM_RESP_ATTR_FAIL_REASON]));
+		if (ftm[NL80211_PMSR_FTM_RESP_ATTR_BUSY_RETRY_TIME])
+			printf(" retry after %us",
+			       nla_get_u32(ftm[NL80211_PMSR_FTM_RESP_ATTR_BUSY_RETRY_TIME]));
+		printf("\n");
+		return;
+	}
+
+	printf("\n");
+
+#define PFTM(tp, attr, sign)							\
+	do {									\
+		if (ftm[NL80211_PMSR_FTM_RESP_ATTR_##attr])			\
+			printf("      " #attr ": %lld\n",			\
+			       (sign long long)nla_get_##tp(			\
+				ftm[NL80211_PMSR_FTM_RESP_ATTR_##attr]));	\
+	} while (0)
+
+	PFTM(u32, BURST_INDEX, unsigned);
+	PFTM(u32, NUM_FTMR_ATTEMPTS, unsigned);
+	PFTM(u32, NUM_FTMR_SUCCESSES, unsigned);
+	PFTM(u8, NUM_BURSTS_EXP, unsigned);
+	PFTM(u8, BURST_DURATION, unsigned);
+	PFTM(u8, FTMS_PER_BURST, unsigned);
+	PFTM(u32, RSSI_AVG, signed);
+	PFTM(u32, RSSI_SPREAD, unsigned);
+	PFTM(u64, RTT_AVG, signed);
+	PFTM(u64, RTT_VARIANCE, unsigned);
+	PFTM(u64, RTT_SPREAD, unsigned);
+	PFTM(u64, DIST_AVG, signed);
+	PFTM(u64, DIST_VARIANCE, unsigned);
+	PFTM(u64, DIST_SPREAD, unsigned);
+
+	if (ftm[NL80211_PMSR_FTM_RESP_ATTR_TX_RATE]) {
+		char buf[100];
+
+		parse_bitrate(ftm[NL80211_PMSR_FTM_RESP_ATTR_TX_RATE],
+			      buf, sizeof(buf));
+		printf("      TX bitrate: %s\n", buf);
+	}
+
+	if (ftm[NL80211_PMSR_FTM_RESP_ATTR_RX_RATE]) {
+		char buf[100];
+
+		parse_bitrate(ftm[NL80211_PMSR_FTM_RESP_ATTR_RX_RATE],
+			      buf, sizeof(buf));
+		printf("      RX bitrate: %s\n", buf);
+	}
+
+	if (ftm[NL80211_PMSR_FTM_RESP_ATTR_LCI])
+		iw_hexdump("      LCI",
+			   nla_data(ftm[NL80211_PMSR_FTM_RESP_ATTR_LCI]),
+			   nla_len(ftm[NL80211_PMSR_FTM_RESP_ATTR_LCI]));
+
+	if (ftm[NL80211_PMSR_FTM_RESP_ATTR_CIVICLOC])
+		iw_hexdump("      civic location",
+			   nla_data(ftm[NL80211_PMSR_FTM_RESP_ATTR_CIVICLOC]),
+			   nla_len(ftm[NL80211_PMSR_FTM_RESP_ATTR_CIVICLOC]));
+}
+
+static const char *pmsr_status(unsigned int status)
+{
+#define PMSR_STATUS(x) case NL80211_PMSR_STATUS_##x: return #x
+	switch (status) {
+	PMSR_STATUS(SUCCESS);
+	PMSR_STATUS(REFUSED);
+	PMSR_STATUS(TIMEOUT);
+	PMSR_STATUS(FAILURE);
+	default:
+		return "unknown";
+	}
+#undef PMSR_STATUS
+}
+
+static void parse_pmsr_peer(struct nlattr *peer)
+{
+	struct nlattr *tb[NL80211_PMSR_PEER_ATTR_MAX + 1];
+	struct nlattr *resp[NL80211_PMSR_RESP_ATTR_MAX + 1];
+	struct nlattr *data[NL80211_PMSR_TYPE_MAX + 1];
+	char macbuf[6*3];
+	int err;
+
+	err = nla_parse_nested(tb, NL80211_PMSR_PEER_ATTR_MAX, peer, NULL);
+	if (err) {
+		printf("  Peer: failed to parse!\n");
+		return;
+	}
+
+	if (!tb[NL80211_PMSR_PEER_ATTR_ADDR]) {
+		printf("  Peer: no MAC address\n");
+		return;
+	}
+
+	mac_addr_n2a(macbuf, nla_data(tb[NL80211_PMSR_PEER_ATTR_ADDR]));
+	printf("  Peer %s:", macbuf);
+
+	if (!tb[NL80211_PMSR_PEER_ATTR_RESP]) {
+		printf(" no response!\n");
+		return;
+	}
+
+	err = nla_parse_nested(resp, NL80211_PMSR_RESP_ATTR_MAX,
+			       tb[NL80211_PMSR_PEER_ATTR_RESP], NULL);
+	if (err) {
+		printf(" failed to parse response!\n");
+		return;
+	}
+
+	if (resp[NL80211_PMSR_RESP_ATTR_STATUS])
+		printf(" status=%d (%s)",
+		       nla_get_u32(resp[NL80211_PMSR_RESP_ATTR_STATUS]),
+		       pmsr_status(nla_get_u32(resp[NL80211_PMSR_RESP_ATTR_STATUS])));
+	if (resp[NL80211_PMSR_RESP_ATTR_HOST_TIME])
+		printf(" @%llu",
+		       (unsigned long long)nla_get_u64(resp[NL80211_PMSR_RESP_ATTR_HOST_TIME]));
+	if (resp[NL80211_PMSR_RESP_ATTR_AP_TSF])
+		printf(" tsf=%llu",
+		       (unsigned long long)nla_get_u64(resp[NL80211_PMSR_RESP_ATTR_AP_TSF]));
+	if (resp[NL80211_PMSR_RESP_ATTR_FINAL])
+		printf(" (final)");
+
+	if (!resp[NL80211_PMSR_RESP_ATTR_DATA]) {
+		printf(" - no data!\n");
+		return;
+	}
+
+	printf("\n");
+
+	nla_parse_nested(data, NL80211_PMSR_TYPE_MAX,
+			 resp[NL80211_PMSR_RESP_ATTR_DATA], NULL);
+
+	if (data[NL80211_PMSR_TYPE_FTM])
+		parse_pmsr_ftm_data(data[NL80211_PMSR_TYPE_FTM]);
+}
+
+static void parse_pmsr_result(struct nlattr **tb,
+			      struct print_event_args *pargs)
+{
+	struct nlattr *pmsr[NL80211_PMSR_ATTR_MAX + 1];
+	struct nlattr *peer;
+	unsigned long long cookie;
+	int err, i;
+
+	if (!tb[NL80211_ATTR_COOKIE]) {
+		printf("Peer measurements: no cookie!\n");
+		return;
+	}
+	cookie = nla_get_u64(tb[NL80211_ATTR_COOKIE]);
+
+	if (!tb[NL80211_ATTR_PEER_MEASUREMENTS]) {
+		printf("Peer measurements: no measurement data!\n");
+		return;
+	}
+
+	err = nla_parse_nested(pmsr, NL80211_PMSR_ATTR_MAX,
+			       tb[NL80211_ATTR_PEER_MEASUREMENTS], NULL);
+	if (err) {
+		printf("Peer measurements: failed to parse measurement data!\n");
+		return;
+	}
+
+	if (!pmsr[NL80211_PMSR_ATTR_PEERS]) {
+		printf("Peer measurements: no peer data!\n");
+		return;
+	}
+
+	printf("Peer measurements (cookie %llu):\n", cookie);
+
+	nla_for_each_nested(peer, pmsr[NL80211_PMSR_ATTR_PEERS], i)
+		parse_pmsr_peer(peer);
+}
+
+static void parse_nan_match(struct nlattr **attrs)
+{
+	char macbuf[6*3];
+	__u64 cookie;
+	struct nlattr *match[NL80211_NAN_MATCH_ATTR_MAX + 1];
+	struct nlattr *local_func[NL80211_NAN_FUNC_ATTR_MAX + 1];
+	struct nlattr *peer_func[NL80211_NAN_FUNC_ATTR_MAX + 1];
+
+	static struct nla_policy
+		nan_match_policy[NL80211_NAN_MATCH_ATTR_MAX + 1] = {
+		[NL80211_NAN_MATCH_FUNC_LOCAL] = { .type = NLA_NESTED },
+		[NL80211_NAN_MATCH_FUNC_PEER] = { .type = NLA_NESTED },
+	};
+
+	static struct nla_policy
+		nan_func_policy[NL80211_NAN_FUNC_ATTR_MAX + 1] = {
+		[NL80211_NAN_FUNC_TYPE] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_SERVICE_ID] = { },
+		[NL80211_NAN_FUNC_PUBLISH_TYPE] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_PUBLISH_BCAST] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_SUBSCRIBE_ACTIVE] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_FOLLOW_UP_ID] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_FOLLOW_UP_REQ_ID] = { .type = NLA_U8 },
+		[NL80211_NAN_FUNC_FOLLOW_UP_DEST] = { },
+		[NL80211_NAN_FUNC_CLOSE_RANGE] = { .type = NLA_FLAG },
+		[NL80211_NAN_FUNC_TTL] = { .type = NLA_U32 },
+		[NL80211_NAN_FUNC_SERVICE_INFO] = { },
+		[NL80211_NAN_FUNC_SRF] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_RX_MATCH_FILTER] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_TX_MATCH_FILTER] = { .type = NLA_NESTED },
+		[NL80211_NAN_FUNC_INSTANCE_ID] = { .type = NLA_U8},
+	};
+
+	cookie = nla_get_u64(attrs[NL80211_ATTR_COOKIE]);
+	mac_addr_n2a(macbuf, nla_data(attrs[NL80211_ATTR_MAC]));
+
+	if (nla_parse_nested(match, NL80211_NAN_MATCH_ATTR_MAX,
+			     attrs[NL80211_ATTR_NAN_MATCH],
+			     nan_match_policy)) {
+		printf("NAN: failed to parse nan match event\n");
+		return;
+	}
+
+	if (nla_parse_nested(local_func, NL80211_NAN_FUNC_ATTR_MAX,
+			     match[NL80211_NAN_MATCH_FUNC_LOCAL],
+			     nan_func_policy)) {
+		printf("NAN: failed to parse nan local func\n");
+		return;
+	}
+
+	if (nla_parse_nested(peer_func, NL80211_NAN_FUNC_ATTR_MAX,
+			      match[NL80211_NAN_MATCH_FUNC_PEER],
+			      nan_func_policy)) {
+		printf("NAN: failed to parse nan local func\n");
+		return;
+	}
+
+	if (nla_get_u8(peer_func[NL80211_NAN_FUNC_TYPE]) ==
+	    NL80211_NAN_FUNC_PUBLISH) {
+		printf(
+		       "NAN(cookie=0x%llx): DiscoveryResult, peer_id=%d, local_id=%d, peer_mac=%s",
+		       cookie,
+		       nla_get_u8(peer_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       nla_get_u8(local_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       macbuf);
+		if (peer_func[NL80211_NAN_FUNC_SERVICE_INFO])
+			printf(", info=%.*s",
+				   nla_len(peer_func[NL80211_NAN_FUNC_SERVICE_INFO]),
+			       (char *)nla_data(peer_func[NL80211_NAN_FUNC_SERVICE_INFO]));
+	} else if (nla_get_u8(peer_func[NL80211_NAN_FUNC_TYPE]) ==
+		   NL80211_NAN_FUNC_SUBSCRIBE) {
+		printf(
+		       "NAN(cookie=0x%llx): Replied, peer_id=%d, local_id=%d, peer_mac=%s",
+		       cookie,
+		       nla_get_u8(peer_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       nla_get_u8(local_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       macbuf);
+	} else if (nla_get_u8(peer_func[NL80211_NAN_FUNC_TYPE]) ==
+		   NL80211_NAN_FUNC_FOLLOW_UP) {
+		printf(
+		       "NAN(cookie=0x%llx): FollowUpReceive, peer_id=%d, local_id=%d, peer_mac=%s",
+		       cookie,
+		       nla_get_u8(peer_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       nla_get_u8(local_func[NL80211_NAN_FUNC_INSTANCE_ID]),
+		       macbuf);
+		if (peer_func[NL80211_NAN_FUNC_SERVICE_INFO])
+			printf(", info=%.*s",
+			       nla_len(peer_func[NL80211_NAN_FUNC_SERVICE_INFO]),
+			       (char *)nla_data(peer_func[NL80211_NAN_FUNC_SERVICE_INFO]));
+	} else {
+		printf("NaN: Malformed event");
+	}
+
+	printf("\n");
 }
 
 static int print_event(struct nl_msg *msg, void *arg)
@@ -348,6 +707,7 @@ static int print_event(struct nl_msg *msg, void *arg)
 		break;
 	case NL80211_CMD_NEW_SCAN_RESULTS:
 		printf("scan finished:");
+		/* fall through */
 	case NL80211_CMD_SCAN_ABORTED:
 		if (gnlh->cmd == NL80211_CMD_SCAN_ABORTED)
 			printf("scan aborted:");
@@ -498,7 +858,9 @@ static int print_event(struct nl_msg *msg, void *arg)
 		break;
 	case NL80211_CMD_CONNECT:
 		status = 0;
-		if (!tb[NL80211_ATTR_STATUS_CODE])
+		if (tb[NL80211_ATTR_TIMED_OUT])
+			printf("timed out");
+		else if (!tb[NL80211_ATTR_STATUS_CODE])
 			printf("unknown connect status");
 		else if (nla_get_u16(tb[NL80211_ATTR_STATUS_CODE]) == 0)
 			printf("connected");
@@ -580,34 +942,53 @@ static int print_event(struct nl_msg *msg, void *arg)
 				   nla_data(tb[NL80211_ATTR_VENDOR_DATA]),
 				   nla_len(tb[NL80211_ATTR_VENDOR_DATA]));
 		break;
-	case NL80211_CMD_RADAR_DETECT:
-		printf("radar event ");
-		if (tb[NL80211_ATTR_RADAR_EVENT]) {
-			switch (nla_get_u32(tb[NL80211_ATTR_RADAR_EVENT])) {
-				case NL80211_RADAR_DETECTED:
-					printf("(radar detected)");
-					break;
-				case NL80211_RADAR_CAC_FINISHED:
-					printf("(cac finished)");
-					break;
-				case NL80211_RADAR_CAC_ABORTED:
-					printf("(cac aborted)");
-					break;
-				case NL80211_RADAR_NOP_FINISHED:
-					printf("(nop finished)");
-					break;
-				default:
-					printf("(unknown)");
-					break;
-			};
-		} else {
-			printf("(unknown)");
+	case NL80211_CMD_RADAR_DETECT: {
+		enum nl80211_radar_event event_type;
+		uint32_t freq;
+
+		if (!tb[NL80211_ATTR_RADAR_EVENT] ||
+		    !tb[NL80211_ATTR_WIPHY_FREQ]) {
+			printf("BAD radar event\n");
+			break;
 		}
-		printf("\n");
+
+		freq = nla_get_u32(tb[NL80211_ATTR_WIPHY_FREQ]);
+		event_type = nla_get_u32(tb[NL80211_ATTR_RADAR_EVENT]);
+
+		switch (event_type) {
+		case NL80211_RADAR_DETECTED:
+			printf("%d MHz: radar detected\n", freq);
+			break;
+		case NL80211_RADAR_CAC_FINISHED:
+			printf("%d MHz: CAC finished\n", freq);
+			break;
+		case NL80211_RADAR_CAC_ABORTED:
+			printf("%d MHz: CAC was aborted\n", freq);
+			break;
+		case NL80211_RADAR_NOP_FINISHED:
+			printf("%d MHz: NOP finished\n", freq);
+			break;
+		default:
+			printf("%d MHz: unknown radar event\n", freq);
+		}
+		}
 		break;
 	case NL80211_CMD_DEL_WIPHY:
 		printf("delete wiphy\n");
 		break;
+	case NL80211_CMD_PEER_MEASUREMENT_RESULT:
+		parse_pmsr_result(tb, args);
+		break;
+	case NL80211_CMD_PEER_MEASUREMENT_COMPLETE:
+		printf("peer measurement complete\n");
+		break;
+	case NL80211_CMD_DEL_NAN_FUNCTION:
+		parse_nan_term(tb);
+		break;
+	case NL80211_CMD_NAN_MATCH: {
+		parse_nan_match(tb);
+		break;
+	}
 	default:
 		printf("unknown event %d (%s)\n",
 		       gnlh->cmd, command_name(gnlh->cmd));
@@ -619,8 +1000,9 @@ static int print_event(struct nl_msg *msg, void *arg)
 }
 
 struct wait_event {
-	int n_cmds;
+	int n_cmds, n_prints;
 	const __u32 *cmds;
+	const __u32 *prints;
 	__u32 cmd;
 	struct print_event_args *pargs;
 };
@@ -631,12 +1013,16 @@ static int wait_event(struct nl_msg *msg, void *arg)
 	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
 	int i;
 
-	for (i = 0; i < wait->n_cmds; i++) {
-		if (gnlh->cmd == wait->cmds[i]) {
-			wait->cmd = gnlh->cmd;
-			if (wait->pargs)
+	if (wait->pargs) {
+		for (i = 0; i < wait->n_prints; i++) {
+			if (gnlh->cmd == wait->prints[i])
 				print_event(msg, wait->pargs);
 		}
+	}
+
+	for (i = 0; i < wait->n_cmds; i++) {
+		if (gnlh->cmd == wait->cmds[i])
+			wait->cmd = gnlh->cmd;
 	}
 
 	return NL_SKIP;
@@ -686,11 +1072,19 @@ int __prepare_listen_events(struct nl80211_state *state)
 			return ret;
 	}
 
+	mcid = nl_get_multicast_id(state->nl_sock, "nl80211", "nan");
+	if (mcid >= 0) {
+		ret = nl_socket_add_membership(state->nl_sock, mcid);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }
 
 __u32 __do_listen_events(struct nl80211_state *state,
 			 const int n_waits, const __u32 *waits,
+			 const int n_prints, const __u32 *prints,
 			 struct print_event_args *args)
 {
 	struct nl_cb *cb = nl_cb_alloc(iw_debug ? NL_CB_DEBUG : NL_CB_DEFAULT);
@@ -703,14 +1097,17 @@ __u32 __do_listen_events(struct nl80211_state *state,
 
 	/* no sequence checking for multicast messages */
 	nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, no_seq_check, NULL);
+	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, valid_handler, NULL);
 
 	if (n_waits && waits) {
 		wait_ev.cmds = waits;
 		wait_ev.n_cmds = n_waits;
+		wait_ev.prints = prints;
+		wait_ev.n_prints = n_prints;
 		wait_ev.pargs = args;
-		nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, wait_event, &wait_ev);
+		register_handler(wait_event, &wait_ev);
 	} else
-		nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, print_event, args);
+		register_handler(print_event, args);
 
 	wait_ev.cmd = 0;
 
@@ -731,11 +1128,10 @@ __u32 listen_events(struct nl80211_state *state,
 	if (ret)
 		return ret;
 
-	return __do_listen_events(state, n_waits, waits, NULL);
+	return __do_listen_events(state, n_waits, waits, 0, NULL, NULL);
 }
 
 static int print_events(struct nl80211_state *state,
-			struct nl_cb *cb,
 			struct nl_msg *msg,
 			int argc, char **argv,
 			enum id_input id)
@@ -771,9 +1167,9 @@ static int print_events(struct nl80211_state *state,
 	if (ret)
 		return ret;
 
-	return __do_listen_events(state, 0, NULL, &args);
+	return __do_listen_events(state, 0, NULL, 0, NULL, &args);
 }
-TOPLEVEL(event, "[-t] [-r] [-f]", 0, 0, CIB_NONE, print_events,
+TOPLEVEL(event, "[-t|-r] [-f]", 0, 0, CIB_NONE, print_events,
 	"Monitor events from the kernel.\n"
 	"-t - print timestamp\n"
 	"-r - print relative timstamp\n"

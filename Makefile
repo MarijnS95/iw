@@ -9,19 +9,18 @@ MKDIR ?= mkdir -p
 INSTALL ?= install
 CC ?= "gcc"
 
+cc-option = $(shell set -e ; $(CC) $(1) -c -x c /dev/null -o /dev/null >/dev/null 2>&1 && echo '$(1)')
+
+CFLAGS_EVAL := $(call cc-option,-Wstringop-overflow=4)
+
 CFLAGS ?= -O2 -g
-CFLAGS += -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common -Werror-implicit-function-declaration
+CFLAGS += -Wall -Wextra -Wundef -Wstrict-prototypes -Wno-trigraphs -fno-strict-aliasing -fno-common \
+	  -Werror-implicit-function-declaration -Wsign-compare -Wno-unused-parameter \
+	  $(CFLAGS_EVAL)
 
-OBJS = iw.o genl.o event.o info.o phy.o \
-	interface.o ibss.o station.o survey.o util.o ocb.o \
-	mesh.o mpath.o mpp.o scan.o reg.o version.o \
-	reason.o status.o connect.o link.o offch.o ps.o cqm.o \
-	bitrate.o wowlan.o coalesce.o roc.o p2p.o vendor.o
-OBJS += sections.o
-
-OBJS-$(HWSIM) += hwsim.o
-
-OBJS += $(OBJS-y) $(OBJS-Y)
+_OBJS := $(sort $(patsubst %.c,%.o,$(wildcard *.c)))
+VERSION_OBJS := $(filter-out version.o, $(_OBJS))
+OBJS := $(VERSION_OBJS) version.o
 
 ALL = iw
 
@@ -90,8 +89,6 @@ endif
 
 all: $(ALL)
 
-VERSION_OBJS := $(filter-out version.o, $(OBJS))
-
 version.c: version.sh $(patsubst %.o,%.c,$(VERSION_OBJS)) nl80211.h iw.h Makefile \
 		$(wildcard .git/index .git/refs/tags)
 	@$(NQ) ' GEN ' $@
@@ -99,7 +96,7 @@ version.c: version.sh $(patsubst %.o,%.c,$(VERSION_OBJS)) nl80211.h iw.h Makefil
 
 %.o: %.c iw.h nl80211.h
 	@$(NQ) ' CC  ' $@
-	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+	$(Q)$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 ifeq ($(IW_ANDROID_BUILD),)
 iw:	$(OBJS)

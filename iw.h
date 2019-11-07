@@ -11,7 +11,31 @@
 #include "nl80211.h"
 #include "ieee80211.h"
 
+/* support for extack if compilation headers are too old */
+#ifndef NETLINK_EXT_ACK
+#define NETLINK_EXT_ACK 11
+enum nlmsgerr_attrs {
+	NLMSGERR_ATTR_UNUSED,
+	NLMSGERR_ATTR_MSG,
+	NLMSGERR_ATTR_OFFS,
+	NLMSGERR_ATTR_COOKIE,
+
+	__NLMSGERR_ATTR_MAX,
+	NLMSGERR_ATTR_MAX = __NLMSGERR_ATTR_MAX - 1
+};
+#endif
+#ifndef NLM_F_CAPPED
+#define NLM_F_CAPPED 0x100
+#endif
+#ifndef NLM_F_ACK_TLVS
+#define NLM_F_ACK_TLVS 0x200
+#endif
+#ifndef SOL_NETLINK
+#define SOL_NETLINK 270
+#endif
+
 #define ETH_ALEN 6
+#define VHT_MUMIMO_GROUP_LEN 24
 
 /* libnl 1.x compatibility code */
 #if !defined(CONFIG_LIBNL20) && !defined(CONFIG_LIBNL30)
@@ -38,6 +62,9 @@ enum id_input {
 	II_WDEV,
 };
 
+#define HANDLER_RET_USAGE 1
+#define HANDLER_RET_DONE 3
+
 struct cmd {
 	const char *name;
 	const char *args;
@@ -48,11 +75,10 @@ struct cmd {
 	const enum command_identify_by idby;
 	/*
 	 * The handler should return a negative error code,
-	 * zero on success, 1 if the arguments were wrong
-	 * and the usage message should and 2 otherwise.
+	 * zero on success, 1 if the arguments were wrong.
+	 * Return 2 iff you provide the error message yourself.
 	 */
 	int (*handler)(struct nl80211_state *state,
-		       struct nl_cb *cb,
 		       struct nl_msg *msg,
 		       int argc, char **argv,
 		       enum id_input id);
@@ -60,13 +86,27 @@ struct cmd {
 	const struct cmd *parent;
 };
 
+struct chanmode {
+	const char *name;
+	unsigned int width;
+	int freq1_diff;
+	int chantype; /* for older kernel */
+};
+
+struct chandef {
+	enum nl80211_chan_width width;
+
+	unsigned int control_freq;
+	unsigned int center_freq1;
+	unsigned int center_freq2;
+};
+
 #define ARRAY_SIZE(ar) (sizeof(ar)/sizeof(ar[0]))
 #define DIV_ROUND_UP(x, y) (((x) + (y - 1)) / (y))
 
 #define __COMMAND(_section, _symname, _name, _args, _nlcmd, _flags, _hidden, _idby, _handler, _help, _sel)\
 	static struct cmd						\
-	__cmd ## _ ## _symname ## _ ## _handler ## _ ## _nlcmd ## _ ## _idby ## _ ## _hidden\
-	__attribute__((used)) __attribute__((section("__cmd")))	= {	\
+	__cmd ## _ ## _symname ## _ ## _handler ## _ ## _nlcmd ## _ ## _idby ## _ ## _hidden = {\
 		.name = (_name),					\
 		.args = (_args),					\
 		.cmd = (_nlcmd),					\
@@ -77,7 +117,10 @@ struct cmd {
 		.help = (_help),					\
 		.parent = _section,					\
 		.selector = (_sel),					\
-	}
+	};								\
+	static struct cmd *__cmd ## _ ## _symname ## _ ## _handler ## _ ## _nlcmd ## _ ## _idby ## _ ## _hidden ## _p \
+	__attribute__((used,section("__cmd"))) =			\
+	&__cmd ## _ ## _symname ## _ ## _handler ## _ ## _nlcmd ## _ ## _idby ## _ ## _hidden
 #define __ACMD(_section, _symname, _name, _args, _nlcmd, _flags, _hidden, _idby, _handler, _help, _sel, _alias)\
 	__COMMAND(_section, _symname, _name, _args, _nlcmd, _flags, _hidden, _idby, _handler, _help, _sel);\
 	static const struct cmd *_alias = &__cmd ## _ ## _symname ## _ ## _handler ## _ ## _nlcmd ## _ ## _idby ## _ ## _hidden
@@ -89,9 +132,7 @@ struct cmd {
 	__COMMAND(&(__section ## _ ## section), name, #name, args, cmd, flags, 1, idby, handler, NULL, NULL)
 
 #define TOPLEVEL(_name, _args, _nlcmd, _flags, _idby, _handler, _help)	\
-	struct cmd							\
-	__section ## _ ## _name						\
-	__attribute__((used)) __attribute__((section("__cmd")))	= {	\
+	struct cmd __section ## _ ## _name = {				\
 		.name = (#_name),					\
 		.args = (_args),					\
 		.cmd = (_nlcmd),					\
@@ -99,13 +140,17 @@ struct cmd {
 		.idby = (_idby),					\
 		.handler = (_handler),					\
 		.help = (_help),					\
-	 }
+	 };								\
+	static struct cmd *__section ## _ ## _name ## _p		\
+	__attribute__((used,section("__cmd"))) = &__section ## _ ## _name
+
 #define SECTION(_name)							\
-	struct cmd __section ## _ ## _name				\
-	__attribute__((used)) __attribute__((section("__cmd"))) = {	\
+	struct cmd __section ## _ ## _name = {				\
 		.name = (#_name),					\
 		.hidden = 1,						\
-	}
+	};								\
+	static struct cmd *__section ## _ ## _name ## _p		\
+	__attribute__((used,section("__cmd"))) = &__section ## _ ## _name
 
 #define DECLARE_SECTION(_name)						\
 	extern struct cmd __section ## _ ## _name;
@@ -128,22 +173,31 @@ __u32 listen_events(struct nl80211_state *state,
 int __prepare_listen_events(struct nl80211_state *state);
 __u32 __do_listen_events(struct nl80211_state *state,
 			 const int n_waits, const __u32 *waits,
+			 const int n_prints, const __u32 *prints,
 			 struct print_event_args *args);
 
+int valid_handler(struct nl_msg *msg, void *arg);
+void register_handler(int (*handler)(struct nl_msg *, void *), void *data);
 
 int mac_addr_a2n(unsigned char *mac_addr, char *arg);
-void mac_addr_n2a(char *mac_addr, unsigned char *arg);
+void mac_addr_n2a(char *mac_addr, const unsigned char *arg);
 int parse_hex_mask(char *hexmask, unsigned char **result, size_t *result_len,
 		   unsigned char **mask);
 unsigned char *parse_hex(char *hex, size_t *outlen);
 
-int parse_keys(struct nl_msg *msg, char **argv, int argc);
+int parse_keys(struct nl_msg *msg, char **argv[], int *argc);
+int parse_freqchan(struct chandef *chandef, bool chan, int argc, char **argv, int *parsed);
+enum nl80211_chan_width str_to_bw(const char *str);
+int parse_txq_stats(char *buf, int buflen, struct nlattr *tid_stats_attr, int header,
+		    int tid, const char *indent);
+int put_chandef(struct nl_msg *msg, struct chandef *chandef);
 
 void print_ht_mcs(const __u8 *mcs);
 void print_ampdu_length(__u8 exponent);
 void print_ampdu_spacing(__u8 spacing);
 void print_ht_capability(__u16 cap);
 void print_vht_info(__u32 capa, const __u8 *mcs);
+void print_he_info(struct nlattr *nl_iftype);
 
 char *channel_width_name(enum nl80211_chan_width width);
 const char *iftype_name(enum nl80211_iftype iftype);
@@ -173,11 +227,22 @@ void print_ies(unsigned char *ie, int ielen, bool unknown,
 void parse_bitrate(struct nlattr *bitrate_attr, char *buf, int buflen);
 void iw_hexdump(const char *prefix, const __u8 *data, size_t len);
 
-#define SCHED_SCAN_OPTIONS "interval <in_msecs> [delay <in_secs>] " \
-	"[freqs <freq>+] [matches [ssid <ssid>]+]] [active [ssid <ssid>]+|passive] [randomise[=<addr>/<mask>]]"
+int get_cf1(const struct chanmode *chanmode, unsigned long freq);
+
+int parse_random_mac_addr(struct nl_msg *msg, char *addrs);
+
+#define SCHED_SCAN_OPTIONS "[interval <in_msecs> | scan_plans [<interval_secs:iterations>*] <interval_secs>] "	\
+	"[delay <in_secs>] [freqs <freq>+] [matches [ssid <ssid>]+]] [active [ssid <ssid>]+|passive] "	\
+	"[randomise[=<addr>/<mask>]]"
 int parse_sched_scan(struct nl_msg *msg, int *argc, char ***argv);
 
+DECLARE_SECTION(switch);
 DECLARE_SECTION(set);
 DECLARE_SECTION(get);
+
+void nan_bf(uint8_t idx, uint8_t *bf, uint16_t bf_len, const uint8_t *buf,
+	    size_t len);
+
+char *hex2bin(const char *hex, char *buf);
 
 #endif /* __IW_H */

@@ -6,7 +6,7 @@
 
 static int parse_vht_chunk(const char *arg, __u8 *nss, __u16 *mcs)
 {
-	int count, i;
+	unsigned int count, i;
 	unsigned int inss, mcs_start, mcs_end, tab[10];
 
 	*nss = 0; *mcs = 0;
@@ -77,7 +77,6 @@ static int setup_vht(struct nl80211_txrate_vht *txrate_vht,
 #define VHT_ARGC_MAX	100
 
 static int handle_bitrates(struct nl80211_state *state,
-			   struct nl_cb *cb,
 			   struct nl_msg *msg,
 			   int argc, char **argv,
 			   enum id_input id)

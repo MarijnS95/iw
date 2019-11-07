@@ -1,6 +1,4 @@
 #include <stdbool.h>
-#include <errno.h>
-#include <net/if.h>
 
 #include <netlink/genl/genl.h>
 #include <netlink/genl/family.h>
@@ -33,11 +31,21 @@ static char *cipher_name(__u32 c)
 	case 0x000fac02:
 		return "TKIP (00-0f-ac:2)";
 	case 0x000fac04:
-		return "CCMP (00-0f-ac:4)";
+		return "CCMP-128 (00-0f-ac:4)";
 	case 0x000fac06:
 		return "CMAC (00-0f-ac:6)";
 	case 0x000fac08:
-		return "GCMP (00-0f-ac:8)";
+		return "GCMP-128 (00-0f-ac:8)";
+	case 0x000fac09:
+		return "GCMP-256 (00-0f-ac:9)";
+	case 0x000fac0a:
+		return "CCMP-256 (00-0f-ac:10)";
+	case 0x000fac0b:
+		return "GMAC-128 (00-0f-ac:11)";
+	case 0x000fac0c:
+		return "GMAC-256 (00-0f-ac:12)";
+	case 0x000fac0d:
+		return "CMAC-256 (00-0f-ac:13)";
 	case 0x00147201:
 		return "WPI-SMS4 (00-14-72:1)";
 	default:
@@ -46,20 +54,6 @@ static char *cipher_name(__u32 c)
 			(c >> 8) & 0xff, c & 0xff);
 
 		return buf;
-	}
-}
-
-static char *dfs_state_name(enum nl80211_dfs_state state)
-{
-	switch (state) {
-	case NL80211_DFS_USABLE:
-		return "usable";
-	case NL80211_DFS_AVAILABLE:
-		return "available";
-	case NL80211_DFS_UNAVAILABLE:
-		return "unavailable";
-	default:
-		return "unknown";
 	}
 }
 
@@ -74,6 +68,16 @@ static int ext_feature_isset(const unsigned char *ext_features, int ext_features
 	ft_byte = ext_features[ftidx / 8];
 	return (ft_byte & BIT(ftidx % 8)) != 0;
 }
+
+static void _ext_feat_print(const struct nlattr *tb,
+			    enum nl80211_ext_feature_index idx,
+			    const char *feature_name, const char *feature_desc)
+{
+	if (ext_feature_isset(nla_data(tb), nla_len(tb),idx))
+		printf("\t\t* [ %s ]: %s\n", feature_name, feature_desc);
+}
+#define ext_feat_print(tb, name, desc)	\
+	_ext_feat_print(tb, NL80211_EXT_FEATURE_##name, #name, desc)
 
 static int print_phy_handler(struct nl_msg *msg, void *arg)
 {
@@ -160,7 +164,13 @@ static int print_phy_handler(struct nl_msg *msg, void *arg)
 			    tb_band[NL80211_BAND_ATTR_VHT_MCS_SET])
 				print_vht_info(nla_get_u32(tb_band[NL80211_BAND_ATTR_VHT_CAPA]),
 					       nla_data(tb_band[NL80211_BAND_ATTR_VHT_MCS_SET]));
+			if (tb_band[NL80211_BAND_ATTR_IFTYPE_DATA]) {
+				struct nlattr *nl_iftype;
+				int rem_band;
 
+				nla_for_each_nested(nl_iftype, tb_band[NL80211_BAND_ATTR_IFTYPE_DATA], rem_band)
+					print_he_info(nl_iftype);
+			}
 			if (tb_band[NL80211_BAND_ATTR_FREQS]) {
 				if (!band_had_freq) {
 					printf("\t\tFrequencies:\n");
@@ -200,22 +210,6 @@ next:
 					if (open)
 						printf(")");
 					printf("\n");
-
-					if (!tb_freq[NL80211_FREQUENCY_ATTR_DISABLED] && tb_freq[NL80211_FREQUENCY_ATTR_DFS_STATE]) {
-						enum nl80211_dfs_state state = nla_get_u32(tb_freq[NL80211_FREQUENCY_ATTR_DFS_STATE]);
-						unsigned long time;
-
-						printf("\t\t\t  DFS state: %s", dfs_state_name(state));
-						if (tb_freq[NL80211_FREQUENCY_ATTR_DFS_TIME]) {
-							time = nla_get_u32(tb_freq[NL80211_FREQUENCY_ATTR_DFS_TIME]);
-							printf(" (for %lu sec)", time/1000);
-						}
-						printf("\n");
-						if (tb_freq[NL80211_FREQUENCY_ATTR_DFS_CAC_TIME])
-							printf("\t\t\t  DFS CAC time: %u ms\n",
-							       nla_get_u32(tb_freq[NL80211_FREQUENCY_ATTR_DFS_CAC_TIME]));
-					}
-
 				}
 			}
 
@@ -250,6 +244,15 @@ next:
 	if (tb_msg[NL80211_ATTR_MAX_MATCH_SETS])
 		printf("\tmax # match sets: %d\n",
 		       nla_get_u8(tb_msg[NL80211_ATTR_MAX_MATCH_SETS]));
+	if (tb_msg[NL80211_ATTR_MAX_NUM_SCHED_SCAN_PLANS])
+		printf("\tmax # scan plans: %d\n",
+		       nla_get_u32(tb_msg[NL80211_ATTR_MAX_NUM_SCHED_SCAN_PLANS]));
+	if (tb_msg[NL80211_ATTR_MAX_SCAN_PLAN_INTERVAL])
+		printf("\tmax scan plan interval: %d\n",
+		       nla_get_u32(tb_msg[NL80211_ATTR_MAX_SCAN_PLAN_INTERVAL]));
+	if (tb_msg[NL80211_ATTR_MAX_SCAN_PLAN_ITERATIONS])
+		printf("\tmax scan plan iterations: %d\n",
+		       nla_get_u32(tb_msg[NL80211_ATTR_MAX_SCAN_PLAN_ITERATIONS]));
 
 	if (tb_msg[NL80211_ATTR_WIPHY_FRAG_THRESHOLD]) {
 		unsigned int frag;
@@ -494,12 +497,13 @@ broken_combination:
 			if (tb_wowlan[NL80211_WOWLAN_TRIG_MAGIC_PKT])
 				printf("\t\t * wake up on magic packet\n");
 			if (tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]) {
+				unsigned int len = nla_len(tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]);
+
 				pat = nla_data(tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]);
 				printf("\t\t * wake up on pattern match, up to %u patterns of %u-%u bytes,\n"
 					"\t\t   maximum packet offset %u bytes\n",
 					pat->max_patterns, pat->min_pattern_len, pat->max_pattern_len,
-					(nla_len(tb_wowlan[NL80211_WOWLAN_TRIG_PKT_PATTERN]) <
-					sizeof(*pat)) ? 0 : pat->max_pkt_offset);
+					len < sizeof(*pat) ? 0 : pat->max_pkt_offset);
 			}
 			if (tb_wowlan[NL80211_WOWLAN_TRIG_GTK_REKEY_SUPPORTED])
 				printf("\t\t * can do GTK rekeying\n");
@@ -527,8 +531,10 @@ broken_combination:
 
 	if (tb_msg[NL80211_ATTR_HT_CAPABILITY_MASK]) {
 		struct ieee80211_ht_cap *cm;
+		unsigned int len = nla_len(tb_msg[NL80211_ATTR_HT_CAPABILITY_MASK]);
+
 		printf("\tHT Capability overrides:\n");
-		if (nla_len(tb_msg[NL80211_ATTR_HT_CAPABILITY_MASK]) >= sizeof(*cm)) {
+		if (len >= sizeof(*cm)) {
 			cm = nla_data(tb_msg[NL80211_ATTR_HT_CAPABILITY_MASK]);
 			printf("\t\t * MCS: %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx"
 			       " %02hhx %02hhx %02hhx %02hhx\n",
@@ -611,18 +617,76 @@ broken_combination:
 			printf("\tDevice supports configuring vdev MAC-addr on create.\n");
 		if (features & NL80211_FEATURE_TDLS_CHANNEL_SWITCH)
 			printf("\tDevice supports TDLS channel switching\n");
-	}
-
-	if (tb_msg[NL80211_ATTR_EXT_FEATURES]) {
-		struct nlattr *tb = tb_msg[NL80211_ATTR_EXT_FEATURES];
-
-		if (ext_feature_isset(nla_data(tb), nla_len(tb),
-				      NL80211_EXT_FEATURE_VHT_IBSS))
-			printf("\tDevice supports VHT-IBSS.\n");
+		if (features & NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR)
+			printf("\tDevice supports randomizing MAC-addr in scans.\n");
+		if (features & NL80211_FEATURE_SCHED_SCAN_RANDOM_MAC_ADDR)
+			printf("\tDevice supports randomizing MAC-addr in sched scans.\n");
+		if (features & NL80211_FEATURE_ND_RANDOM_MAC_ADDR)
+			printf("\tDevice supports randomizing MAC-addr in net-detect scans.\n");
 	}
 
 	if (tb_msg[NL80211_ATTR_TDLS_SUPPORT])
 		printf("\tDevice supports T-DLS.\n");
+
+	if (tb_msg[NL80211_ATTR_EXT_FEATURES]) {
+		struct nlattr *tb = tb_msg[NL80211_ATTR_EXT_FEATURES];
+
+		printf("\tSupported extended features:\n");
+
+		ext_feat_print(tb, VHT_IBSS, "VHT-IBSS");
+		ext_feat_print(tb, RRM, "RRM");
+		ext_feat_print(tb, MU_MIMO_AIR_SNIFFER, "MU-MIMO sniffer");
+		ext_feat_print(tb, SCAN_START_TIME, "scan start timestamp");
+		ext_feat_print(tb, BSS_PARENT_TSF,
+			       "BSS last beacon/probe TSF");
+		ext_feat_print(tb, SET_SCAN_DWELL, "scan dwell setting");
+		ext_feat_print(tb, BEACON_RATE_LEGACY,
+			       "legacy beacon rate setting");
+		ext_feat_print(tb, BEACON_RATE_HT, "HT beacon rate setting");
+		ext_feat_print(tb, BEACON_RATE_VHT, "VHT beacon rate setting");
+		ext_feat_print(tb, FILS_STA,
+			       "STA FILS (Fast Initial Link Setup)");
+		ext_feat_print(tb, MGMT_TX_RANDOM_TA,
+			       "randomized TA while not associated");
+		ext_feat_print(tb, MGMT_TX_RANDOM_TA_CONNECTED,
+			       "randomized TA while associated");
+		ext_feat_print(tb, SCHED_SCAN_RELATIVE_RSSI,
+			       "sched_scan for BSS with better RSSI report");
+		ext_feat_print(tb, CQM_RSSI_LIST,
+			       "multiple CQM_RSSI_THOLD records");
+		ext_feat_print(tb, FILS_SK_OFFLOAD,
+			       "FILS shared key authentication offload");
+		ext_feat_print(tb, 4WAY_HANDSHAKE_STA_PSK,
+			       "4-way handshake with PSK in station mode");
+		ext_feat_print(tb, 4WAY_HANDSHAKE_STA_1X,
+			       "4-way handshake with 802.1X in station mode");
+		ext_feat_print(tb, FILS_MAX_CHANNEL_TIME,
+			       "FILS max channel attribute override with dwell time");
+		ext_feat_print(tb, ACCEPT_BCAST_PROBE_RESP,
+			       "accepts broadcast probe response");
+		ext_feat_print(tb, OCE_PROBE_REQ_HIGH_TX_RATE,
+			       "probe request TX at high rate (at least 5.5Mbps)");
+		ext_feat_print(tb, OCE_PROBE_REQ_DEFERRAL_SUPPRESSION,
+			       "probe request tx deferral and suppression");
+		ext_feat_print(tb, MFP_OPTIONAL,
+			       "MFP_OPTIONAL value in ATTR_USE_MFP");
+		ext_feat_print(tb, LOW_SPAN_SCAN, "low span scan");
+		ext_feat_print(tb, LOW_POWER_SCAN, "low power scan");
+		ext_feat_print(tb, HIGH_ACCURACY_SCAN, "high accuracy scan");
+		ext_feat_print(tb, DFS_OFFLOAD, "DFS offload");
+		ext_feat_print(tb, CONTROL_PORT_OVER_NL80211,
+			       "control port over nl80211");
+		ext_feat_print(tb, TXQS, "FQ-CoDel-enabled intermediate TXQs");
+		ext_feat_print(tb, AIRTIME_FAIRNESS,
+			       "airtime fairness scheduling");
+		ext_feat_print(tb, AP_PMKSA_CACHING,
+			       "PMKSA caching supported in AP mode");
+		ext_feat_print(tb, SCHED_SCAN_BAND_SPECIFIC_RSSI_THOLD,
+			       "band specific RSSI thresholds for scheduled scan");
+		ext_feat_print(tb, EXT_KEY_ID, "extended key ID support");
+		ext_feat_print(tb, STA_TX_PWR, "TX power control per station");
+		ext_feat_print(tb, SAE_OFFLOAD, "SAE offload support");
+	}
 
 	if (tb_msg[NL80211_ATTR_COALESCE_RULE]) {
 		struct nl80211_coalesce_rule_support *rule;
@@ -645,7 +709,6 @@ broken_combination:
 static bool nl80211_has_split_wiphy = false;
 
 static int handle_info(struct nl80211_state *state,
-		       struct nl_cb *cb,
 		       struct nl_msg *msg,
 		       int argc, char **argv,
 		       enum id_input id)
@@ -653,13 +716,13 @@ static int handle_info(struct nl80211_state *state,
 	char *feat_args[] = { "features", "-q" };
 	int err;
 
-	err = handle_cmd(state, CIB_NONE, 2, feat_args);
+	err = handle_cmd(state, II_NONE, 2, feat_args);
 	if (!err && nl80211_has_split_wiphy) {
 		nla_put_flag(msg, NL80211_ATTR_SPLIT_WIPHY_DUMP);
 		nlmsg_hdr(msg)->nlmsg_flags |= NLM_F_DUMP;
 	}
 
-	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, print_phy_handler, NULL);
+	register_handler(print_phy_handler, NULL);
 
 	return 0;
 }
@@ -669,12 +732,11 @@ TOPLEVEL(list, NULL, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, CIB_NONE, handle_info,
 	 "List all wireless devices and their capabilities.");
 TOPLEVEL(phy, NULL, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, CIB_NONE, handle_info, NULL);
 
-static int handle_commands(struct nl80211_state *state,
-			   struct nl_cb *cb, struct nl_msg *msg,
+static int handle_commands(struct nl80211_state *state, struct nl_msg *msg,
 			   int argc, char **argv, enum id_input id)
 {
 	int i;
-	for (i = 1; i < NL80211_CMD_MAX; i++)
+	for (i = 1; i <= NL80211_CMD_MAX; i++)
 		printf("%d (0x%x): %s\n", i, i, command_name(i));
 	/* don't send netlink messages */
 	return 2;
@@ -705,12 +767,11 @@ static int print_feature_handler(struct nl_msg *msg, void *arg)
 	return NL_SKIP;
 }
 
-static int handle_features(struct nl80211_state *state,
-			   struct nl_cb *cb, struct nl_msg *msg,
+static int handle_features(struct nl80211_state *state, struct nl_msg *msg,
 			   int argc, char **argv, enum id_input id)
 {
 	unsigned long print = argc == 0 || strcmp(argv[0], "-q");
-	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, print_feature_handler, (void *)print);
+	register_handler(print_feature_handler, (void *)print);
 	return 0;
 }
 
