@@ -650,6 +650,110 @@ static void parse_nan_match(struct nlattr **attrs)
 	printf("\n");
 }
 
+static void parse_new_peer_candidate(struct nlattr **attrs)
+{
+	char macbuf[ETH_ALEN * 3];
+	int32_t sig_dbm;
+
+	printf("new peer candidate");
+	if (attrs[NL80211_ATTR_MAC]) {
+		mac_addr_n2a(macbuf, nla_data(attrs[NL80211_ATTR_MAC]));
+		printf(" %s", macbuf);
+	}
+	if (attrs[NL80211_ATTR_RX_SIGNAL_DBM]) {
+		sig_dbm = nla_get_u32(attrs[NL80211_ATTR_RX_SIGNAL_DBM]);
+		printf(" %d dBm", sig_dbm);
+	}
+
+	printf("\n");
+}
+
+static void parse_set_interface(struct nlattr **attrs)
+{
+	printf("set interface");
+
+	if (attrs[NL80211_ATTR_IFTYPE]) {
+		printf(" type ");
+		switch (nla_get_u32(attrs[NL80211_ATTR_IFTYPE])) {
+		case NL80211_IFTYPE_STATION:
+			printf("station");
+			break;
+		case NL80211_IFTYPE_AP:
+			printf("access point");
+			break;
+		case NL80211_IFTYPE_MESH_POINT:
+			printf("mesh point");
+			break;
+		case NL80211_IFTYPE_ADHOC:
+			printf("IBSS");
+			break;
+		case NL80211_IFTYPE_MONITOR:
+			printf("monitor");
+			break;
+		case NL80211_IFTYPE_AP_VLAN:
+			printf("AP-VLAN");
+			break;
+		case NL80211_IFTYPE_WDS:
+			printf("WDS");
+			break;
+		case NL80211_IFTYPE_P2P_CLIENT:
+			printf("P2P-client");
+			break;
+		case NL80211_IFTYPE_P2P_GO:
+			printf("P2P-GO");
+			break;
+		case NL80211_IFTYPE_P2P_DEVICE:
+			printf("P2P-Device");
+			break;
+		case NL80211_IFTYPE_OCB:
+			printf("OCB");
+			break;
+		case NL80211_IFTYPE_NAN:
+			printf("NAN");
+			break;
+		default:
+			printf("unknown (%d)",
+			       nla_get_u32(attrs[NL80211_ATTR_IFTYPE]));
+			break;
+		}
+	}
+
+	if (attrs[NL80211_ATTR_MESH_ID]) {
+		printf(" meshid ");
+		print_ssid_escaped(nla_len(attrs[NL80211_ATTR_MESH_ID]),
+				   nla_data(attrs[NL80211_ATTR_MESH_ID]));
+	}
+
+	if (attrs[NL80211_ATTR_4ADDR]) {
+		printf(" use 4addr %d", nla_get_u8(attrs[NL80211_ATTR_4ADDR]));
+	}
+
+	printf("\n");
+}
+
+static void parse_sta_opmode_changed(struct nlattr **attrs)
+{
+	char macbuf[ETH_ALEN*3];
+
+	printf("sta opmode changed");
+
+	if (attrs[NL80211_ATTR_MAC]) {
+		mac_addr_n2a(macbuf, nla_data(attrs[NL80211_ATTR_MAC]));
+		printf(" %s", macbuf);
+	}
+
+	if (attrs[NL80211_ATTR_SMPS_MODE])
+		printf(" smps mode %d", nla_get_u8(attrs[NL80211_ATTR_SMPS_MODE]));
+
+	if (attrs[NL80211_ATTR_CHANNEL_WIDTH])
+		printf(" chan width %d", nla_get_u8(attrs[NL80211_ATTR_CHANNEL_WIDTH]));
+
+	if (attrs[NL80211_ATTR_NSS])
+		printf(" nss %d", nla_get_u8(attrs[NL80211_ATTR_NSS]));
+
+	printf("\n");
+}
+
 static int print_event(struct nl_msg *msg, void *arg)
 {
 	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
@@ -985,10 +1089,18 @@ static int print_event(struct nl_msg *msg, void *arg)
 	case NL80211_CMD_DEL_NAN_FUNCTION:
 		parse_nan_term(tb);
 		break;
-	case NL80211_CMD_NAN_MATCH: {
+	case NL80211_CMD_NAN_MATCH:
 		parse_nan_match(tb);
 		break;
-	}
+	case NL80211_CMD_NEW_PEER_CANDIDATE:
+		parse_new_peer_candidate(tb);
+		break;
+	case NL80211_CMD_SET_INTERFACE:
+		parse_set_interface(tb);
+		break;
+	case NL80211_CMD_STA_OPMODE_CHANGED:
+		parse_sta_opmode_changed(tb);
+		break;
 	default:
 		printf("unknown event %d (%s)\n",
 		       gnlh->cmd, command_name(gnlh->cmd));
@@ -1172,5 +1284,5 @@ static int print_events(struct nl80211_state *state,
 TOPLEVEL(event, "[-t|-r] [-f]", 0, 0, CIB_NONE, print_events,
 	"Monitor events from the kernel.\n"
 	"-t - print timestamp\n"
-	"-r - print relative timstamp\n"
+	"-r - print relative timestamp\n"
 	"-f - print full frame for auth/assoc etc.");
