@@ -586,10 +586,10 @@ static void print_rm_enabled_capabilities(const uint8_t type, uint8_t len,
 			    const uint8_t *data,
 			    const struct print_ies_data *ie_buffer)
 {
-	__u64 capa = data[0] |
-		     data[1] << 8 |
-		     data[2] << 16 |
-		     data[3] << 24 |
+	__u64 capa = ((__u64) data[0]) |
+		     ((__u64) data[1]) << 8 |
+		     ((__u64) data[2]) << 16 |
+		     ((__u64) data[3]) << 24 |
 		     ((__u64) data[4]) << 32;
 
 	printf("\n");
@@ -609,7 +609,7 @@ static void print_rm_enabled_capabilities(const uint8_t type, uint8_t len,
 	PRINT_RM_CAPA(2, "Parallel Measurements");
 	PRINT_RM_CAPA(3, "Repeated Measurements");
 	PRINT_RM_CAPA(4, "Beacon Passive Measurement");
-	PRINT_RM_CAPA(5, "Beacon Active");
+	PRINT_RM_CAPA(5, "Beacon Active Measurement");
 	PRINT_RM_CAPA(6, "Beacon Table Measurement");
 	PRINT_RM_CAPA(7, "Beacon Measurement Reporting Conditions");
 	PRINT_RM_CAPA(8, "Frame Measurement");
@@ -729,6 +729,21 @@ static void print_erp(const uint8_t type, uint8_t len, const uint8_t *data,
 		printf(" Use_Protection");
 	if (data[0] & 0x04)
 		printf(" Barker_Preamble_Mode");
+	printf("\n");
+}
+
+static void print_ap_channel_report(const uint8_t type, uint8_t len, const uint8_t *data,
+				    const struct print_ies_data *ie_buffer)
+{
+	uint8_t oper_class = data[0];
+	int i;
+
+	printf("\n");
+	printf("\t\t * operating class: %d\n", oper_class);
+	printf("\t\t * channel(s):");
+	for (i = 1; i < len; ++i) {
+		printf(" %d", data[i]);
+	}
 	printf("\n");
 }
 
@@ -1131,10 +1146,10 @@ static void print_interworking(const uint8_t type, uint8_t len,
 		printf("\t\tVenue Type: %i\n", (int)(data[2]));
 	}
 	if (len == 9)
-		printf("\t\tHESSID: %02hx:%02hx:%02hx:%02hx:%02hx:%02hx\n",
+		printf("\t\tHESSID: %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n",
 		       data[3], data[4], data[5], data[6], data[7], data[8]);
 	else if (len == 7)
-		printf("\t\tHESSID: %02hx:%02hx:%02hx:%02hx:%02hx:%02hx\n",
+		printf("\t\tHESSID: %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n",
 		       data[1], data[2], data[3], data[4], data[5], data[6]);
 }
 
@@ -1193,7 +1208,7 @@ static void print_11u_rcon(const uint8_t type, uint8_t len, const uint8_t *data,
 			printf("Invalid IE length.\n");
 		} else {
 			for (idx = 0; idx < ln0; idx++) {
-				printf("%02hx", data[2 + idx]);
+				printf("%02hhx", data[2 + idx]);
 			}
 			printf("\n");
 		}
@@ -1205,7 +1220,7 @@ static void print_11u_rcon(const uint8_t type, uint8_t len, const uint8_t *data,
 			printf("Invalid IE length.\n");
 		} else {
 			for (idx = 0; idx < ln1; idx++) {
-				printf("%02hx", data[2 + ln0 + idx]);
+				printf("%02hhx", data[2 + ln0 + idx]);
 			}
 			printf("\n");
 		}
@@ -1217,10 +1232,40 @@ static void print_11u_rcon(const uint8_t type, uint8_t len, const uint8_t *data,
 			printf("Invalid IE length.\n");
 		} else {
 			for (idx = 0; idx < ln2; idx++) {
-				printf("%02hx", data[2 + ln0 + ln1 + idx]);
+				printf("%02hhx", data[2 + ln0 + ln1 + idx]);
 			}
 			printf("\n");
 		}
+	}
+}
+
+static void print_tx_power_envelope(const uint8_t type, uint8_t len,
+				    const uint8_t *data,
+				    const struct print_ies_data *ie_buffer)
+{
+	const uint8_t local_max_tx_power_count = data[0] & 7;
+	const uint8_t local_max_tx_power_unit_interp = (data[0] >> 3) & 7;
+	int i;
+	static const char *power_names[] = {
+		"Local Maximum Transmit Power For 20 MHz",
+		"Local Maximum Transmit Power For 40 MHz",
+		"Local Maximum Transmit Power For 80 MHz",
+		"Local Maximum Transmit Power For 160/80+80 MHz",
+	};
+
+	printf("\n");
+
+	if (local_max_tx_power_count + 2 != len)
+		return;
+	if (local_max_tx_power_unit_interp != 0)
+		return;
+	for (i = 0; i < local_max_tx_power_count + 1; ++i) {
+		int8_t power_val = ((int8_t)data[1 + i]) >> 1;
+		int8_t point5 = data[1 + i] & 1;
+		if (point5)
+			printf("\t\t * %s: %i.5 dBm\n", power_names[i], power_val);
+		else
+			printf("\t\t * %s: %i dBm\n", power_names[i], power_val);
 	}
 }
 
@@ -1444,8 +1489,8 @@ static void print_vht_capa(const uint8_t type, uint8_t len, const uint8_t *data,
 			   const struct print_ies_data *ie_buffer)
 {
 	printf("\n");
-	print_vht_info(data[0] | (data[1] << 8) |
-		       (data[2] << 16) | (data[3] << 24),
+	print_vht_info((__u32) data[0] | ((__u32)data[1] << 8) |
+		       ((__u32)data[2] << 16) | ((__u32)data[3] << 24),
 		       data + 4);
 }
 
@@ -1465,6 +1510,89 @@ static void print_vht_oper(const uint8_t type, uint8_t len, const uint8_t *data,
 	printf("\t\t * center freq segment 1: %d\n", data[1]);
 	printf("\t\t * center freq segment 2: %d\n", data[2]);
 	printf("\t\t * VHT basic MCS set: 0x%.2x%.2x\n", data[4], data[3]);
+}
+
+static void print_supp_op_classes(const uint8_t type, uint8_t len,
+				  const uint8_t *data,
+				  const struct print_ies_data *ie_buffer)
+{
+	uint8_t *p = (uint8_t*) data;
+	const uint8_t *next_data = p + len;
+	int zero_delimiter = 0;
+	int one_hundred_thirty_delimiter = 0;
+
+	printf("\n");
+	printf("\t\t * current operating class: %d\n", *p);
+	while (++p < next_data) {
+		if (*p == 130) {
+			one_hundred_thirty_delimiter = 1;
+			break;
+		}
+		if (*p == 0) {
+			zero_delimiter = 0;
+			break;
+		}
+		printf("\t\t * operating class: %d\n", *p);
+	}
+	if (one_hundred_thirty_delimiter)
+		while (++p < next_data) {
+			printf("\t\t * current operating class extension: %d\n", *p);
+		}
+	if (zero_delimiter)
+		while (++p < next_data - 1) {
+			printf("\t\t * operating class tuple: %d %d\n", p[0], p[1]);
+			if (*p == 0)
+				break;
+		}
+}
+
+static void print_measurement_pilot_tx(const uint8_t type, uint8_t len,
+				       const uint8_t *data,
+				       const struct print_ies_data *ie_buffer)
+{
+	uint8_t *p, len_remaining;
+
+	printf("\n");
+	printf("\t\t * interval: %d TUs\n", data[0]);
+
+	if(len <= 1)
+		return;
+
+	p = (uint8_t *) data + 1;
+	len_remaining = len - 1;
+
+	while (len_remaining >=5) {
+		uint8_t subelement_id = *p, len, *end;
+
+		p++;
+		len = *p;
+		p++;
+		end = p + len;
+
+		len_remaining -= 2;
+
+		/* 802.11-2016 only allows vendor specific elements */
+		if (subelement_id != 221) {
+			printf("\t\t * <Invalid subelement ID %d>\n", subelement_id);
+			return;
+		}
+
+		if (len < 3 || len > len_remaining) {
+			printf(" <Parse error, element too short>\n");
+			return;
+		}
+
+		printf("\t\t * vendor specific: OUI %.2x:%.2x:%.2x, data:",
+			p[0], p[1], p[2]);
+		/* add only two here and use ++p in while loop */
+		p += 2;
+
+		while (++p < end)
+			printf(" %.2x", *p);
+		printf("\n");
+
+		len_remaining -= len;
+	}
 }
 
 static void print_obss_scan_params(const uint8_t type, uint8_t len,
@@ -1588,6 +1716,9 @@ static const struct ie_print ieprinters[] = {
 	[42] = { "ERP", print_erp, 1, 255, BIT(PRINT_SCAN), },
 	[45] = { "HT capabilities", print_ht_capa, 26, 26, BIT(PRINT_SCAN), },
 	[47] = { "ERP D4.0", print_erp, 1, 255, BIT(PRINT_SCAN), },
+	[51] = { "AP Channel Report", print_ap_channel_report, 1, 255, BIT(PRINT_SCAN), },
+	[59] = { "Supported operating classes", print_supp_op_classes, 1, 255, BIT(PRINT_SCAN), },
+	[66] = { "Measurement Pilot Transmission", print_measurement_pilot_tx, 1, 255, BIT(PRINT_SCAN), },
 	[74] = { "Overlapping BSS scan params", print_obss_scan_params, 14, 255, BIT(PRINT_SCAN), },
 	[61] = { "HT operation", print_ht_op, 22, 22, BIT(PRINT_SCAN), },
 	[62] = { "Secondary Channel Offset", print_secchan_offs, 1, 1, BIT(PRINT_SCAN), },
@@ -1601,7 +1732,8 @@ static const struct ie_print ieprinters[] = {
 	[127] = { "Extended capabilities", print_capabilities, 0, 255, BIT(PRINT_SCAN), },
 	[107] = { "802.11u Interworking", print_interworking, 0, 255, BIT(PRINT_SCAN), },
 	[108] = { "802.11u Advertisement", print_11u_advert, 0, 255, BIT(PRINT_SCAN), },
-	[111] = { "802.11u Roaming Consortium", print_11u_rcon, 0, 255, BIT(PRINT_SCAN), },
+	[111] = { "802.11u Roaming Consortium", print_11u_rcon, 2, 255, BIT(PRINT_SCAN), },
+	[195] = { "Transmit Power Envelope", print_tx_power_envelope, 2, 5, BIT(PRINT_SCAN), },
 };
 
 static void print_wifi_wpa(const uint8_t type, uint8_t len, const uint8_t *data,
@@ -1711,12 +1843,17 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 	while (len >= 4) {
 		subtype = (data[0] << 8) + data[1];
 		sublen = (data[2] << 8) + data[3];
-		if (sublen > len)
+		if (sublen > len - 4)
 			break;
 
 		switch (subtype) {
 		case 0x104a:
 			tab_on_first(&first);
+			if (sublen < 1) {
+				printf("\t * Version: (invalid "
+				       "length %d)\n", sublen);
+				break;
+			}
 			printf("\t * Version: %d.%d\n", data[4] >> 4, data[4] & 0xF);
 			break;
 		case 0x1011:
@@ -1727,8 +1864,8 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 			uint16_t id;
 			tab_on_first(&first);
 			if (sublen != 2) {
-				printf("\t * Device Password ID: (invalid "
-				       "length %d)\n", sublen);
+				printf("\t * Device Password ID: (invalid length %d)\n",
+				       sublen);
 				break;
 			}
 			id = data[4] << 8 | data[5];
@@ -1749,20 +1886,41 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 			printf("\t * Model Number: %.*s\n", sublen, data + 4);
 			break;
 		case 0x103b: {
-			__u8 val = data[4];
+			__u8 val;
+
+			if (sublen < 1) {
+				printf("\t * Response Type: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			val = data[4];
 			tab_on_first(&first);
 			printf("\t * Response Type: %d%s\n",
 			       val, val == 3 ? " (AP)" : "");
 			break;
 		}
 		case 0x103c: {
-			__u8 val = data[4];
+			__u8 val;
+
+			if (sublen < 1) {
+				printf("\t * RF Bands: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			val = data[4];
 			tab_on_first(&first);
 			printf("\t * RF Bands: 0x%x\n", val);
 			break;
 		}
 		case 0x1041: {
-			__u8 val = data[4];
+			__u8 val;
+
+			if (sublen < 1) {
+				printf("\t * Selected Registrar: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			val = data[4];
 			tab_on_first(&first);
 			printf("\t * Selected Registrar: 0x%x\n", val);
 			break;
@@ -1772,7 +1930,14 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 			printf("\t * Serial Number: %.*s\n", sublen, data + 4);
 			break;
 		case 0x1044: {
-			__u8 val = data[4];
+			__u8 val;
+
+			if (sublen < 1) {
+				printf("\t * Wi-Fi Protected Setup State: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			val = data[4];
 			tab_on_first(&first);
 			printf("\t * Wi-Fi Protected Setup State: %d%s%s\n",
 			       val,
@@ -1794,11 +1959,26 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 				data[12], data[13], data[14], data[15],
 				data[16], data[17], data[18], data[19]);
 			break;
+		case 0x1049:
+			tab_on_first(&first);
+			if (sublen == 6 &&
+			    data[4] == 0x00 &&
+			    data[5] == 0x37 &&
+			    data[6] == 0x2a &&
+			    data[7] == 0x00 &&
+			    data[8] == 0x01) {
+				uint8_t v2 = data[9];
+				printf("\t * Version2: %d.%d\n", v2 >> 4, v2 & 0xf);
+			} else {
+				printf("\t * Unknown vendor extension. len=%u\n",
+				       sublen);
+			}
+			break;
 		case 0x1054: {
 			tab_on_first(&first);
 			if (sublen != 8) {
-				printf("\t * Primary Device Type: (invalid "
-				       "length %d)\n", sublen);
+				printf("\t * Primary Device Type: (invalid length %d)\n",
+				       sublen);
 				break;
 			}
 			printf("\t * Primary Device Type: "
@@ -1809,15 +1989,29 @@ static void print_wifi_wps(const uint8_t type, uint8_t len, const uint8_t *data,
 			break;
 		}
 		case 0x1057: {
-			__u8 val = data[4];
+			__u8 val;
 			tab_on_first(&first);
+			if (sublen < 1) {
+				printf("\t * AP setup locked: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			val = data[4];
 			printf("\t * AP setup locked: 0x%.2x\n", val);
 			break;
 		}
 		case 0x1008:
 		case 0x1053: {
-			__u16 meth = (data[4] << 8) + data[5];
-			bool comma = false;
+			__u16 meth;
+			bool comma;
+
+			if (sublen < 2) {
+				printf("\t * Config methods: (invalid length %d)\n",
+				       sublen);
+				break;
+			}
+			meth = (data[4] << 8) + data[5];
+			comma = false;
 			tab_on_first(&first);
 			printf("\t * %sConfig methods:",
 			       subtype == 0x1053 ? "Selected Registrar ": "");
@@ -1929,7 +2123,7 @@ static inline void print_p2p(const uint8_t type, uint8_t len,
 		case 0x12: /* invitation flags */
 		case 0xdd: /* vendor specific */
 		default: {
-			const __u8 *subdata = data + 4;
+			const __u8 *subdata = data + 3;
 			__u16 tmplen = sublen;
 
 			tab_on_first(&first);
@@ -2074,7 +2268,10 @@ void print_ies(unsigned char *ie, int ielen, bool unknown,
 		.ie = ie,
 		.ielen = ielen };
 
-	while (ielen >= 2 && ielen >= ie[1]) {
+	if (ie == NULL || ielen < 0)
+		return;
+
+	while (ielen >= 2 && ielen - 2 >= ie[1]) {
 		if (ie[0] < ARRAY_SIZE(ieprinters) &&
 		    ieprinters[ie[0]].name &&
 		    ieprinters[ie[0]].flags & BIT(ptype)) {
