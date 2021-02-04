@@ -155,6 +155,22 @@ struct chandef {
 #define DECLARE_SECTION(_name)						\
 	extern struct cmd __section ## _ ## _name;
 
+struct vendor_event {
+	unsigned int vendor_id, subcmd;
+	void (*callback)(unsigned int vendor_id, unsigned int subcmd,
+			 struct nlattr *data);
+};
+
+#define VENDOR_EVENT(_id, _subcmd, _callback)				\
+	const struct vendor_event 					\
+	vendor_event_ ## _id ## _ ## _subcmd = {			\
+		.vendor_id = _id,					\
+		.subcmd = _subcmd,					\
+		.callback = _callback,					\
+	}, * const vendor_event_ ## _id ## _ ## _subcmd ## _p		\
+	__attribute__((used,section("vendor_event"))) =			\
+		&vendor_event_ ## _id ## _ ## _subcmd
+
 extern const char iw_version[];
 
 extern int iw_debug;
@@ -197,6 +213,7 @@ void print_ampdu_length(__u8 exponent);
 void print_ampdu_spacing(__u8 spacing);
 void print_ht_capability(__u16 cap);
 void print_vht_info(__u32 capa, const __u8 *mcs);
+void print_he_capability(const uint8_t *ie, int len);
 void print_he_info(struct nlattr *nl_iftype);
 
 char *channel_width_name(enum nl80211_chan_width width);
@@ -233,7 +250,7 @@ int parse_random_mac_addr(struct nl_msg *msg, char *addrs);
 
 #define SCHED_SCAN_OPTIONS "[interval <in_msecs> | scan_plans [<interval_secs:iterations>*] <interval_secs>] "	\
 	"[delay <in_secs>] [freqs <freq>+] [matches [ssid <ssid>]+]] [active [ssid <ssid>]+|passive] "	\
-	"[randomise[=<addr>/<mask>]]"
+	"[randomise[=<addr>/<mask>]] [coloc] [flush]"
 int parse_sched_scan(struct nl_msg *msg, int *argc, char ***argv);
 
 DECLARE_SECTION(switch);
@@ -244,5 +261,8 @@ void nan_bf(uint8_t idx, uint8_t *bf, uint16_t bf_len, const uint8_t *buf,
 	    size_t len);
 
 char *hex2bin(const char *hex, char *buf);
+
+int set_bitrates(struct nl_msg *msg, int argc, char **argv,
+		 enum nl80211_attrs attr);
 
 #endif /* __IW_H */

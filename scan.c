@@ -202,6 +202,10 @@ int parse_sched_scan(struct nl_msg *msg, int *argc, char ***argv)
 				err = parse_random_mac_addr(msg, v[0] + 9);
 				if (err)
 					goto nla_put_failure;
+			} else if (!strncmp(v[0], "coloc", 5)) {
+				flags |= NL80211_SCAN_FLAG_COLOCATED_6GHZ;
+			} else if (!strncmp(v[0], "flush", 5)) {
+				flags |= NL80211_SCAN_FLAG_FLUSH;
 			} else {
 				/* this element is not for us, so
 				 * return to continue parsing.
@@ -421,6 +425,9 @@ static int handle_scan(struct nl80211_state *state,
 			} else if (strcmp(argv[i], "ap-force") == 0) {
 				flags |= NL80211_SCAN_FLAG_AP;
 				break;
+			} else if (strcmp(argv[i], "coloc") == 0) {
+				flags |= NL80211_SCAN_FLAG_COLOCATED_6GHZ;
+				break;
 			} else if (strcmp(argv[i], "duration-mandatory") == 0) {
 				duration_mandatory = true;
 				break;
@@ -508,6 +515,8 @@ static int handle_scan(struct nl80211_state *state,
 
 	if (have_freqs)
 		nla_put_nested(msg, NL80211_ATTR_SCAN_FREQUENCIES, freqs);
+	else
+		flags |=  NL80211_SCAN_FLAG_COLOCATED_6GHZ;
 	if (flags)
 		NLA_PUT_U32(msg, NL80211_ATTR_SCAN_FLAGS, flags);
 	if (duration)
@@ -2263,6 +2272,44 @@ static void print_vendor(unsigned char len, unsigned char *data,
 	printf("\n");
 }
 
+static void print_he_capa(const uint8_t type, uint8_t len, const uint8_t *data,
+			  const struct print_ies_data *ie_buffer)
+{
+	printf("\n");
+	print_he_capability(data, len);
+}
+
+static const struct ie_print ext_printers[] = {
+	[35] = { "HE capabilities", print_he_capa, 21, 54, BIT(PRINT_SCAN), },
+};
+
+static void print_extension(unsigned char len, unsigned char *ie,
+			    bool unknown, enum print_ie_type ptype)
+{
+	unsigned char tag;
+
+	if (len < 1) {
+		printf("\tExtension IE: <empty>\n");
+		return;
+	}
+
+	tag = ie[0];
+	if (tag < ARRAY_SIZE(ext_printers) && ext_printers[tag].name &&
+	    ext_printers[tag].flags & BIT(ptype)) {
+		print_ie(&ext_printers[tag], tag, len - 1, ie + 1, NULL);
+		return;
+	}
+
+	if (unknown) {
+		int i;
+
+		printf("\tUnknown Extension ID (%d):", ie[0]);
+		for (i = 1; i < len; i++)
+			printf(" %.2x", ie[i]);
+		printf("\n");
+	}
+}
+
 void print_ies(unsigned char *ie, int ielen, bool unknown,
 	       enum print_ie_type ptype)
 {
@@ -2281,6 +2328,8 @@ void print_ies(unsigned char *ie, int ielen, bool unknown,
 				 ie[0], ie[1], ie + 2, &ie_buffer);
 		} else if (ie[0] == 221 /* vendor */) {
 			print_vendor(ie[1], ie + 2, unknown, ptype);
+		} else if (ie[0] == 255 /* extension */) {
+			print_extension(ie[1], ie + 2, unknown, ptype);
 		} else if (unknown) {
 			int i;
 
@@ -2600,7 +2649,7 @@ COMMAND(scan, dump, "[-u]",
 	NL80211_CMD_GET_SCAN, NLM_F_DUMP, CIB_NETDEV, handle_scan_dump,
 	"Dump the current scan results. If -u is specified, print unknown\n"
 	"data in scan results.");
-COMMAND(scan, trigger, "[freq <freq>*] [duration <dur>] [ies <hex as 00:11:..>] [meshid <meshid>] [lowpri,flush,ap-force,duration-mandatory] [randomise[=<addr>/<mask>]] [ssid <ssid>*|passive]",
+COMMAND(scan, trigger, "[freq <freq>*] [duration <dur>] [ies <hex as 00:11:..>] [meshid <meshid>] [lowpri,flush,ap-force,duration-mandatory,coloc] [randomise[=<addr>/<mask>]] [ssid <ssid>*|passive]",
 	NL80211_CMD_TRIGGER_SCAN, 0, CIB_NETDEV, handle_scan,
 	 "Trigger a scan on the given frequencies with probing for the given\n"
 	 "SSIDs (or wildcard if not given) unless passive scanning is requested.\n"
