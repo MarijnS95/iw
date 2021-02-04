@@ -1266,7 +1266,7 @@ void print_he_capability(const uint8_t *ie, int len)
 	mcs_set = &ie[i];
 	mcs_len = len - i;
 
-	__print_he_capa(mac_cap, phy_cap - 1, mcs_set, mcs_len, NULL, 0, false);
+	__print_he_capa(mac_cap, (const __u16 *)((const __u8 *)phy_cap - 1), mcs_set, mcs_len, NULL, 0, false);
 }
 
 void iw_hexdump(const char *prefix, const __u8 *buf, size_t size)
